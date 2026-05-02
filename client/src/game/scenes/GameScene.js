@@ -95,7 +95,7 @@ export default class GameScene extends Phaser.Scene {
     this.player.score  = this._initScore;
 
     // Camera
-    this.cameras.main.setWorldBounds(0, 0, ROOM_WIDTH, ROOM_HEIGHT);
+    this.cameras.main.setBounds(0, 0, ROOM_WIDTH, ROOM_HEIGHT);
     this.cameras.main.startFollow(this.player, true, 0.08, 0.08);
     this.cameras.main.setFollowOffset(0, 60);
 
