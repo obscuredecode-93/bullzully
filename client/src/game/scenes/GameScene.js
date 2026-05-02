@@ -42,6 +42,9 @@ export default class GameScene extends Phaser.Scene {
     this._bossActive       = false;
     this.boss              = null;
     this.player            = null;
+    // Safe defaults so update() never crashes if create() throws partway through
+    this.cursors           = null;
+    this.keys              = null;
     // Colliders added per-boss are stored here so we can remove them on room clear
     this._bossColliders    = [];
   }
@@ -87,6 +90,19 @@ export default class GameScene extends Phaser.Scene {
     this.playerProjectiles = this.physics.add.group();
     this.enemyProjectiles  = this.physics.add.group();
 
+    // Input — initialised FIRST so it's always set before any possible throw below
+    this.cursors = this.input.keyboard.createCursorKeys();
+    this.keys = this.input.keyboard.addKeys({
+      A: Phaser.Input.Keyboard.KeyCodes.A,
+      D: Phaser.Input.Keyboard.KeyCodes.D,
+      W: Phaser.Input.Keyboard.KeyCodes.W,
+      S: Phaser.Input.Keyboard.KeyCodes.S,
+      Z: Phaser.Input.Keyboard.KeyCodes.Z,
+      X: Phaser.Input.Keyboard.KeyCodes.X,
+      C: Phaser.Input.Keyboard.KeyCodes.C,
+      SPACE: Phaser.Input.Keyboard.KeyCodes.SPACE,
+    });
+
     // Player
     this.player = new Player(this, 120, 380);
     this.player.health = this._initHealth;
@@ -101,19 +117,6 @@ export default class GameScene extends Phaser.Scene {
 
     // Colliders that apply to the whole session (not per-room)
     this._setupPermanentColliders();
-
-    // Input
-    this.cursors = this.input.keyboard.createCursorKeys();
-    this.keys = this.input.keyboard.addKeys({
-      A: Phaser.Input.Keyboard.KeyCodes.A,
-      D: Phaser.Input.Keyboard.KeyCodes.D,
-      W: Phaser.Input.Keyboard.KeyCodes.W,
-      S: Phaser.Input.Keyboard.KeyCodes.S,
-      Z: Phaser.Input.Keyboard.KeyCodes.Z,
-      X: Phaser.Input.Keyboard.KeyCodes.X,
-      C: Phaser.Input.Keyboard.KeyCodes.C,
-      SPACE: Phaser.Input.Keyboard.KeyCodes.SPACE,
-    });
 
     this._setupEvents();
 
@@ -135,7 +138,7 @@ export default class GameScene extends Phaser.Scene {
 
   // ─── UPDATE ──────────────────────────────────────────────────────────────
   update(time) {
-    if (!this.player || this.player.isDead) return;
+    if (!this.player || this.player.isDead || !this.cursors || !this.keys) return;
 
     this.player.update(this.cursors, this.keys, time);
 
