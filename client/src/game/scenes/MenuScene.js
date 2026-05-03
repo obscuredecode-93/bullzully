@@ -57,24 +57,24 @@ export default class MenuScene extends Phaser.Scene {
       },
     });
 
-    // Player sprite showcase
-    this.add.image(cx, 210, 'player').setScale(3);
+    // Player sprite showcase — y=240 keeps 43px clear above the lore ticker
+    this.add.image(cx, 240, 'player').setScale(3);
 
-    // Menu options
-    this._createButton(cx, 280, 'PLAY', () => {
+    // Menu options — shifted down to maintain breathing room below sprite
+    this._createButton(cx, 308, 'PLAY', () => {
       this.scene.start('GameScene', {
         zoneIndex: 0, lives: 3, score: 0, sessionId: this._getSessionId(),
       });
     });
 
-    this._createButton(cx, 320, 'CONTINUE', () => this._loadGame());
-    this._createButton(cx, 360, 'LEADERBOARD', () => this.scene.start('LeaderboardScene'));
+    this._createButton(cx, 344, 'CONTINUE', () => this._loadGame());
+    this._createButton(cx, 380, 'LEADERBOARD', () => this.scene.start('LeaderboardScene'));
 
     // Controls
     this.add.text(cx, 420, 'WASD/ARROWS: Move   Z/SPACE: Jump', {
       fontSize: '5px', color: '#888888', fontFamily: "'Press Start 2P'",
     }).setOrigin(0.5);
-    this.add.text(cx, 435, 'X: Melee Attack   C: Ranged Attack', {
+    this.add.text(cx, 434, 'X: Melee   C: Ranged   V/SHIFT: BULLZ', {
       fontSize: '5px', color: '#888888', fontFamily: "'Press Start 2P'",
     }).setOrigin(0.5);
 
