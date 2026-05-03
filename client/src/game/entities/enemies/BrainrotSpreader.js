@@ -1,4 +1,5 @@
 import { GAME_HEIGHT, ROOM_WIDTH } from '../../config';
+import { flashWhite, showDamageNumber, shakeOnDeath } from '../../utils/combatFX';
 
 /**
  * BrainrotSpreader — ranged enemy. Keeps distance, lobs brainrot particles at player.
@@ -89,13 +90,15 @@ export default class BrainrotSpreader extends Phaser.Physics.Arcade.Sprite {
   takeDamage(amount) {
     if (this.dead) return;
     this.hp -= amount;
-    this.scene.tweens.add({ targets: this, alpha: 0.3, duration: 80, yoyo: true });
+    flashWhite(this.scene, this);
+    showDamageNumber(this.scene, this.x, this.y - 10, amount);
     if (this.hp <= 0) this.die();
   }
 
   die() {
     if (this.dead) return;
     this.dead = true;
+    shakeOnDeath(this.scene);
     this._hpBar.destroy();
 
     const burst = this.scene.add.image(this.x, this.y, 'death_burst').setDepth(15).setTint(0x00ff66);

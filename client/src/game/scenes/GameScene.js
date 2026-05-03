@@ -100,7 +100,9 @@ export default class GameScene extends Phaser.Scene {
       Z: Phaser.Input.Keyboard.KeyCodes.Z,
       X: Phaser.Input.Keyboard.KeyCodes.X,
       C: Phaser.Input.Keyboard.KeyCodes.C,
+      V: Phaser.Input.Keyboard.KeyCodes.V,
       SPACE: Phaser.Input.Keyboard.KeyCodes.SPACE,
+      SHIFT: Phaser.Input.Keyboard.KeyCodes.SHIFT,
     });
 
     // Player
@@ -179,8 +181,11 @@ export default class GameScene extends Phaser.Scene {
       this.enemies,
       (hitbox, enemy) => {
         if (!hitbox.active || !enemy.active || !enemy.takeDamage) return;
-        enemy.takeDamage(25);
+        const dmg = Math.floor(25 * (this.player?.bullzMultiplier ?? 1));
+        enemy.takeDamage(dmg);
         this._showHitSpark(enemy.x, enemy.y);
+        // Medium shake on melee connect
+        this.cameras.main.shake(150, 0.01);
       }
     );
 
@@ -190,7 +195,8 @@ export default class GameScene extends Phaser.Scene {
       this.enemies,
       (bullet, enemy) => {
         if (!bullet.active || !enemy.active) return;
-        enemy.takeDamage(bullet.getData('damage') || 30);
+        const base = bullet.getData('damage') || 30;
+        enemy.takeDamage(Math.floor(base * (this.player?.bullzMultiplier ?? 1)));
         this._showHitSpark(bullet.x, bullet.y);
         bullet.destroy();
       }
@@ -244,8 +250,9 @@ export default class GameScene extends Phaser.Scene {
         boss,
         (hitbox, b) => {
           if (!hitbox.active || !b.active) return;
-          b.takeDamage(25);
+          b.takeDamage(Math.floor(25 * (this.player?.bullzMultiplier ?? 1)));
           this._showHitSpark(b.x, b.y - 20);
+          this.cameras.main.shake(150, 0.01);
         }
       ),
       // Bullets hit boss
@@ -254,7 +261,8 @@ export default class GameScene extends Phaser.Scene {
         boss,
         (bullet, b) => {
           if (!bullet.active || !b.active) return;
-          b.takeDamage(bullet.getData('damage') || 30);
+          const base = bullet.getData('damage') || 30;
+          b.takeDamage(Math.floor(base * (this.player?.bullzMultiplier ?? 1)));
           this._showHitSpark(bullet.x, bullet.y);
           bullet.destroy();
         }

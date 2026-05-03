@@ -1,4 +1,5 @@
 import { MELEE_DAMAGE } from '../../config';
+import { flashWhite, showDamageNumber, shakeOnDeath } from '../../utils/combatFX';
 
 /**
  * PookieSigma — basic melee enemy. Patrols platform, charges player on sight.
@@ -73,21 +74,15 @@ export default class PookieSigma extends Phaser.Physics.Arcade.Sprite {
   takeDamage(amount) {
     if (this.dead) return;
     this.hp -= amount;
-
-    // Flash red
-    this.scene.tweens.add({
-      targets: this,
-      alpha: 0.3,
-      duration: 80,
-      yoyo: true,
-    });
-
+    flashWhite(this.scene, this);
+    showDamageNumber(this.scene, this.x, this.y - 10, amount);
     if (this.hp <= 0) this.die();
   }
 
   die() {
     if (this.dead) return;
     this.dead = true;
+    shakeOnDeath(this.scene);
     this._hpBar.destroy();
 
     // Death burst

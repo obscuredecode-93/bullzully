@@ -1,4 +1,5 @@
 import { MELEE_DAMAGE } from '../../config';
+import { flashWhite, showDamageNumber, shakeOnDeath } from '../../utils/combatFX';
 
 /**
  * ZullbullyKnight — heavy armored enemy. Takes 3 hits to break guard, then vulnerable.
@@ -125,9 +126,10 @@ export default class ZullbullyKnight extends Phaser.Physics.Arcade.Sprite {
           onComplete: () => text.destroy() });
       }
     } else {
-      // Full damage
+      // Full damage — white flash only when guard is broken
       this.hp -= amount;
-      this.scene.tweens.add({ targets: this, alpha: 0.3, duration: 80, yoyo: true });
+      flashWhite(this.scene, this);
+      showDamageNumber(this.scene, this.x, this.y - 10, amount);
     }
 
     if (this.hp <= 0) this.die();
@@ -136,6 +138,7 @@ export default class ZullbullyKnight extends Phaser.Physics.Arcade.Sprite {
   die() {
     if (this.dead) return;
     this.dead = true;
+    shakeOnDeath(this.scene);
     this._hpBar.destroy();
     this._guardIndicator.destroy();
 

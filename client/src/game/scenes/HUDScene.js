@@ -75,6 +75,31 @@ export default class HUDScene extends Phaser.Scene {
     bg.fillRect(0, 0, width, 50);
     bg.setDepth(-1);
 
+    // ─── BULLZ cooldown bar (bottom-left of screen) ──────────────────────
+    const { height } = this.cameras.main;
+    this._height = height;
+
+    // Dark strip at bottom
+    const bottomBg = this.add.graphics();
+    bottomBg.fillStyle(0x000000, 0.65);
+    bottomBg.fillRect(0, height - 24, 260, 24);
+    bottomBg.setDepth(-1);
+
+    this.add.text(8, height - 18, 'BULLZ:', {
+      fontSize: '6px', color: '#ffcc00', fontFamily: "'Press Start 2P'",
+    }).setDepth(1);
+
+    this._bullzBarBg   = this.add.graphics().setDepth(1);
+    this._bullzBarFill = this.add.graphics().setDepth(2);
+    this._bullzTimer   = this.add.text(225, height - 12, '', {
+      fontSize: '5px', color: '#888888', fontFamily: "'Press Start 2P'",
+    }).setOrigin(0, 0.5).setDepth(3);
+
+    // Tracked for ready-pulse detection
+    this._wasBullzOnCooldown = false;
+
+    this._drawBullzBar(0, false, false, 8000);
+
     // ─── Wire up to GameScene events ──────────────────────────────────────
     const gameScene = this.scene.get('GameScene');
     if (gameScene) {
@@ -103,6 +128,76 @@ export default class HUDScene extends Phaser.Scene {
   _updateLives() {
     this._lifeIcons.forEach((icon, i) => {
       icon.setAlpha(i < this._lives ? 1 : 0.2);
+    });
+  }
+
+  // ─── Per-frame poll for BULLZ cooldown ───────────────────────────────────
+  update() {
+    const player = this.scene.get('GameScene')?.player;
+    if (!player) return;
+
+    const cooldown = player.bullzCooldown ?? 0;
+    const ready    = cooldown <= 0;
+    const active   = player.bullzActive ?? false;
+    const pct      = ready ? 1 : 1 - cooldown / (player.bullzCooldownMax || 8000);
+
+    this._drawBullzBar(pct, ready, active, cooldown);
+
+    // Detect cooldown-complete transition → show "BULLZ READY" pulse
+    if (this._wasBullzOnCooldown && ready && !active) {
+      this._wasBullzOnCooldown = false;
+      this._flashBullzReady();
+    }
+    if (!ready) this._wasBullzOnCooldown = true;
+  }
+
+  _drawBullzBar(pct, ready, active, cooldownMs) {
+    const h = this._height || this.cameras.main.height;
+    const bx = 60, bw = 160, bh = 10, by = h - 19;
+
+    // Background track
+    this._bullzBarBg.clear();
+    this._bullzBarBg.fillStyle(0x110800).fillRect(bx, by, bw, bh);
+    const borderCol = (ready || active) ? 0xffcc00 : 0x443300;
+    this._bullzBarBg.lineStyle(1, borderCol).strokeRect(bx, by, bw, bh);
+
+    // Fill
+    this._bullzBarFill.clear();
+    if (pct > 0) {
+      const fillCol = active ? 0xffff44 : ready ? 0xffcc00 : 0x886600;
+      const fillW = Math.floor((bw - 2) * pct);
+      this._bullzBarFill.fillStyle(fillCol).fillRect(bx + 1, by + 1, fillW, bh - 2);
+      // Shine when ready or active
+      if (ready || active) {
+        this._bullzBarFill.fillStyle(0xffffff, 0.4).fillRect(bx + 1, by + 1, fillW, 3);
+      }
+    }
+
+    // Label
+    if (active) {
+      this._bullzTimer.setText('ACTIVE!').setStyle({ color: '#ffff44' });
+    } else if (ready) {
+      this._bullzTimer.setText('READY!').setStyle({ color: '#ffcc00' });
+    } else {
+      this._bullzTimer.setText(`${Math.ceil(cooldownMs / 1000)}s`).setStyle({ color: '#888888' });
+    }
+  }
+
+  _flashBullzReady() {
+    const cx = this.cameras.main.width / 2;
+    const t = this.add.text(cx, this.cameras.main.height / 2 - 40, 'BULLZ READY!', {
+      fontSize: '13px', color: '#ffcc00',
+      fontFamily: "'Press Start 2P'", stroke: '#000', strokeThickness: 5,
+    }).setOrigin(0.5).setDepth(28);
+
+    this.tweens.add({
+      targets: t,
+      scaleX: 1.25, scaleY: 1.25,
+      duration: 180, yoyo: true, repeat: 2,
+      onComplete: () => {
+        this.tweens.add({ targets: t, alpha: 0, duration: 400,
+          onComplete: () => t.destroy() });
+      },
     });
   }
 

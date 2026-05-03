@@ -1,3 +1,5 @@
+import { flashWhite, showDamageNumber, shakeOnDeath } from '../../utils/combatFX';
+
 /**
  * MagheibaChaasi — mid boss of the cave dungeon. Pattern-based attacks.
  *
@@ -227,7 +229,8 @@ export default class MagheibaChaasi extends Phaser.Physics.Arcade.Sprite {
   takeDamage(amount) {
     if (this.dead) return;
     this.hp -= amount;
-    this.scene.tweens.add({ targets: this, alpha: 0.5, duration: 80, yoyo: true });
+    flashWhite(this.scene, this);
+    showDamageNumber(this.scene, this.x, this.y - 30, amount);
     if (this.hp <= 0) this.die();
   }
 

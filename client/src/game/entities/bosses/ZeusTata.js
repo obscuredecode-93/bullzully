@@ -1,3 +1,5 @@
+import { flashWhite, showDamageNumber } from '../../utils/combatFX';
+
 /**
  * BullyMaguire (Bulladi Chuttar Lamdiya) — final boss in Canada.
  *
@@ -257,6 +259,9 @@ export default class BullyMaguire extends Phaser.Physics.Arcade.Sprite {
         onComplete: () => txt.destroy() });
     }
 
+    flashWhite(this.scene, this);
+    // Show actual (post-reduction) damage number in boss colour
+    showDamageNumber(this.scene, this.x, this.y - 40, actual);
     this.scene.tweens.add({ targets: this, alpha: 0.4, duration: 80, yoyo: true });
     if (this.hp <= 0) this.die();
   }

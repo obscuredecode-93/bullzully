@@ -1,4 +1,5 @@
 import { MELEE_DAMAGE } from '../../config';
+import { flashWhite, showDamageNumber, shakeOnDeath } from '../../utils/combatFX';
 
 /**
  * DiscordGhoster — teleports randomly when taking damage or on a timer.
@@ -97,6 +98,8 @@ export default class DiscordGhoster extends Phaser.Physics.Arcade.Sprite {
   takeDamage(amount) {
     if (this.dead) return;
     this.hp -= amount;
+    flashWhite(this.scene, this);
+    showDamageNumber(this.scene, this.x, this.y - 10, amount);
 
     // 40% chance to teleport when hit
     if (Math.random() < 0.4 && this.teleportCooldown <= 0) {
@@ -115,6 +118,7 @@ export default class DiscordGhoster extends Phaser.Physics.Arcade.Sprite {
   die() {
     if (this.dead) return;
     this.dead = true;
+    shakeOnDeath(this.scene);
     this._hpBar.destroy();
 
     // Multiple teleport bursts on death
