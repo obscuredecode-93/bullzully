@@ -29,14 +29,29 @@ export default class HUDScene extends Phaser.Scene {
     this._hpFill = this.add.graphics();
     this._drawHealthBar();
 
-    // ─── Right side: Lives ───────────────────────────────────────────────
+    // ─── Right side: Lives (shifted left to make room for pause button) ─────
     this._lifeIcons = [];
     for (let i = 0; i < 3; i++) {
       this._lifeIcons.push(
-        this.add.image(width - 12 - i * 22, 10, 'hud_life').setOrigin(1, 0)
+        this.add.image(width - 76 - i * 22, 10, 'hud_life').setOrigin(1, 0)
       );
     }
     this._updateLives();
+
+    // ─── Pause button (top-right corner) ─────────────────────────────────────
+    const pauseBtn = this.add.text(width - 8, 8, '[ II ]', {
+      fontSize: '7px', color: '#ffffff',
+      fontFamily: "'Press Start 2P'", stroke: '#000', strokeThickness: 2,
+    }).setOrigin(1, 0).setInteractive({ useHandCursor: true });
+
+    pauseBtn.on('pointerover', () => pauseBtn.setStyle({ color: '#ffcc00' }));
+    pauseBtn.on('pointerout',  () => pauseBtn.setStyle({ color: '#ffffff' }));
+    pauseBtn.on('pointerdown', () => {
+      const gameScene = this.scene.get('GameScene');
+      if (gameScene && !gameScene.scene.isPaused()) {
+        gameScene.events.emit('pause-requested');
+      }
+    });
 
     // ─── Center: Zone name ────────────────────────────────────────────────
     this._zoneText = this.add.text(width / 2, 6, this._zoneName, {

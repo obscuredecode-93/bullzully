@@ -132,8 +132,12 @@ export default class GameScene extends Phaser.Scene {
 
     this._loadRoom(this.currentRoomIndex);
 
-    // ESC = quick-save
-    this.input.keyboard.addKey('ESC').on('down', () => this._saveGame());
+    // ESC = pause,  P = quick-save
+    this.input.keyboard.addKey('ESC').on('down', () => this._triggerPause());
+    this.input.keyboard.addKey('P').on('down',   () => this._saveGame());
+
+    // Also allow the HUD pause button to trigger pause
+    this.events.on('pause-requested', () => this._triggerPause());
   }
 
   // ─── UPDATE ──────────────────────────────────────────────────────────────
@@ -567,6 +571,23 @@ export default class GameScene extends Phaser.Scene {
       }).setScrollFactor(0).setDepth(25).setOrigin(0.5);
       this.tweens.add({ targets: t, y: t.y - 30, alpha: 0, duration: 1800, delay: 500,
         onComplete: () => t.destroy() });
+    });
+  }
+
+  // ─── PAUSE ───────────────────────────────────────────────────────────────
+  _triggerPause() {
+    // Don't double-pause or pause during a transition
+    if (this.scene.isPaused('GameScene') || this._transitioning) return;
+
+    this.scene.pause('GameScene');
+    this.scene.launch('PauseScene', {
+      sessionId:   this.sessionId,
+      currentZone: this.currentZoneIndex,
+      currentRoom: this.currentRoomIndex,
+      lives:   this.player?.lives   ?? 3,
+      health:  this.player?.health  ?? 100,
+      ammo:    this.player?.ammo    ?? 10,
+      score:   this.player?.score   ?? 0,
     });
   }
 

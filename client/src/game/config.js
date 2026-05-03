@@ -2,6 +2,7 @@ import BootScene from './scenes/BootScene';
 import MenuScene from './scenes/MenuScene';
 import GameScene from './scenes/GameScene';
 import HUDScene from './scenes/HUDScene';
+import PauseScene from './scenes/PauseScene';
 import GameOverScene from './scenes/GameOverScene';
 import LeaderboardScene from './scenes/LeaderboardScene';
 
@@ -45,7 +46,7 @@ export function createGameConfig(parent) {
       default: 'arcade',
       arcade: { gravity: { y: GRAVITY }, debug: false },
     },
-    scene: [BootScene, MenuScene, GameScene, HUDScene, GameOverScene, LeaderboardScene],
+    scene: [BootScene, MenuScene, GameScene, HUDScene, PauseScene, GameOverScene, LeaderboardScene],
     pixelArt: true,
     roundPixels: true,
   };
