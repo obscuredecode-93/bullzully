@@ -18,7 +18,7 @@
  *  - Jump:  Z, Space, or Up arrow
  *  - Melee: X
  *  - Range: C (consumes ammo)
- *  - BULLZ: V or Shift (8s cooldown)
+ *  - BULLZ: V or Shift (available when charge meter is full)
  *
  * @module entities/Player
  */
@@ -69,14 +69,15 @@ export default class Player extends Phaser.Physics.Arcade.Sprite {
     this.damageCooldown    = 0;
 
     // ── BULLZ special attack ─────────────────────────────────────────────────
-    // bullzMultiplier is read by GameScene's collider callbacks, not recalculated there,
-    // so there's a single authoritative value per frame.
-    this.bullzCooldown    = 0;
-    this.bullzCooldownMax = 8000;  // 8 seconds — strong enough to need a long gate.
+    // Charge-based meter: fills passively over time and on enemy kills.
+    // bullzMultiplier is read by GameScene's collider callbacks — single authoritative source.
+    this.bullzCharge      = 0;          // Current charge (0 → bullzChargeMax).
+    this.bullzChargeMax   = 1000;       // Full charge = BULLZ available to fire.
+    this._bullzFillRate   = 0.5;        // Passive units/frame (~3%/sec at 60fps; full in ~33s idle).
     this.bullzActive      = false;
-    this.bullzMultiplier  = 1;     // Becomes 3 for 2s during BULLZ; read in collider callbacks.
-    this._bullzText       = null;  // Floating "BULLZ!" label above the player.
-    this._bullzColorEvent = null;  // Phaser TimerEvent for rapid color cycling.
+    this.bullzMultiplier  = 1;          // Becomes 3 for 2s during BULLZ; read in collider callbacks.
+    this._bullzText       = null;       // Floating "BULLZ!" label above the player.
+    this._bullzColorEvent = null;       // Phaser TimerEvent for rapid color cycling.
 
     // ── Physics body ────────────────────────────────────────────────────────
     this.body.setSize(20, 32);
@@ -116,7 +117,10 @@ export default class Player extends Phaser.Physics.Arcade.Sprite {
     this.meleeCooldown  = Math.max(0, this.meleeCooldown  - 16);
     this.rangedCooldown = Math.max(0, this.rangedCooldown - 16);
     this.damageCooldown = Math.max(0, this.damageCooldown - 16);
-    if (this.bullzCooldown > 0) this.bullzCooldown = Math.max(0, this.bullzCooldown - 16);
+    // Passive BULLZ charge fill — stops at max, pauses while BULLZ is active.
+    if (!this.bullzActive && this.bullzCharge < this.bullzChargeMax) {
+      this.bullzCharge = Math.min(this.bullzChargeMax, this.bullzCharge + this._bullzFillRate);
+    }
 
     if (!this.isAttacking) this._handleMovement(cursors, keys);
     this._handleActions(cursors, keys);
@@ -210,7 +214,7 @@ export default class Player extends Phaser.Physics.Arcade.Sprite {
     // Two keys for BULLZ so both keyboard layouts feel natural (laptop vs desktop).
     const bullzKey = Phaser.Input.Keyboard.JustDown(keys.V) ||
                      Phaser.Input.Keyboard.JustDown(keys.SHIFT);
-    if (bullzKey && this.bullzCooldown <= 0 && !this.bullzActive)
+    if (bullzKey && this.bullzCharge >= this.bullzChargeMax && !this.bullzActive)
       this._bullzAttack();
   }
 
@@ -263,30 +267,30 @@ export default class Player extends Phaser.Physics.Arcade.Sprite {
    * Fires a player bullet that travels horizontally until it exits the room or
    * hits an enemy or platform.
    *
-   * Bullets are added to `scene.playerProjectiles` so GameScene's permanent
-   * overlap colliders handle hit detection without per-bullet polling.
-   * `setAllowGravity(false)` keeps them flying straight — no arc.
+   * Uses `playerProjectiles.create()` rather than `physics.add.image()` + `group.add()`.
+   * The two-step approach can cause the physics group to re-configure the body after
+   * it is added, silently zeroing out the velocity that was just set. Creating the
+   * sprite directly inside the group avoids this entirely.
    *
-   * The 1800ms self-destruct prevents lingering projectiles from accumulating
-   * if the player fires at a wall and walks away.
+   * `setAllowGravity(false)` keeps bullets flying straight — no arc.
+   * The 1800ms self-destruct prevents stale bullets from accumulating off-screen.
    */
   _rangedAttack() {
     if (this.ammo <= 0) return;
     this.ammo--;
     this.rangedCooldown = this.rangedCooldownMax;
 
-    const bullet = this.scene.physics.add.image(
-      this.x + (this.facingRight ? 20 : -20),
-      this.y - 4,
-      'player_bullet'
-    ).setDepth(9);
+    // Spawn slightly in front of the player so the bullet doesn't overlap the hitbox.
+    const spawnX = this.x + (this.facingRight ? 28 : -28);
+    const bullet  = this.scene.playerProjectiles.create(spawnX, this.y - 4, 'player_bullet');
+    if (!bullet) return; // Group at capacity or scene not ready.
 
-    bullet.body.setAllowGravity(false);
+    bullet.setDepth(9);
     bullet.setData('damage', RANGED_DAMAGE);
+    bullet.body.setAllowGravity(false);
     bullet.setVelocityX(this.facingRight ? PROJECTILE_SPEED : -PROJECTILE_SPEED);
 
-    this.scene.time.delayedCall(1800, () => { if (bullet.active) bullet.destroy(); });
-    this.scene.playerProjectiles.add(bullet);
+    this.scene.time.delayedCall(1800, () => { if (bullet?.active) bullet.destroy(); });
     // Notify HUD immediately so ammo display updates this frame.
     this.scene.events.emit('ammo-changed', this.ammo);
   }
@@ -305,15 +309,14 @@ export default class Player extends Phaser.Physics.Arcade.Sprite {
    *  - 8-spark burst radiating outward (one image per spoke, destroyed via tween).
    *  - Camera shake for impact weight.
    *
-   * The knockback loop uses `setVelocity` directly rather than takeDamage for
-   * each enemy because we want the physics impulse without triggering death FX
-   * on every nearby enemy (10 damage is minor; the main payoff is the triple
-   * damage window that follows).
+   * The knockback burst also applies the full 3× damage multiplier so the
+   * activation feels impactful on its own — the multiplier window that follows
+   * is the sustained payoff.
    */
   _bullzAttack() {
     this.bullzActive     = true;
-    this.bullzCooldown   = this.bullzCooldownMax;
-    this.bullzMultiplier = 3; // Read by GameScene collider callbacks for 2s.
+    this.bullzCharge     = 0;   // Drain the meter; passive fill resumes after BULLZ ends.
+    this.bullzMultiplier = 3;   // Read by GameScene collider callbacks for 2s.
 
     // ── Screen flash ─────────────────────────────────────────────────────────
     const { width, height } = this.scene.cameras.main;
@@ -369,7 +372,8 @@ export default class Player extends Phaser.Physics.Arcade.Sprite {
       if (dist < KNOCK_RANGE) {
         const dir = enemy.x >= this.x ? 1 : -1;
         if (enemy.setVelocity) enemy.setVelocity(dir * 360, -220);
-        if (enemy.takeDamage) enemy.takeDamage(10); // Minor chip — knockback is the real payoff.
+        // Full 3× burst damage — should be felt immediately on activation.
+        if (enemy.takeDamage) enemy.takeDamage(MELEE_DAMAGE * this.bullzMultiplier);
       }
     });
 
@@ -560,6 +564,46 @@ export default class Player extends Phaser.Physics.Arcade.Sprite {
   addScore(amount) {
     this.score += amount;
     this.scene.events.emit('score-changed', this.score);
+  }
+
+  // ============================================================
+  // BULLZ CHARGE
+  // ============================================================
+
+  /**
+   * Adds charge to the BULLZ meter. Called by GameScene on enemy kills.
+   * No-op while BULLZ is active to prevent instant re-trigger after the window ends.
+   *
+   * @param {number} amount - Charge units to add (capped at bullzChargeMax).
+   */
+  addBullzCharge(amount) {
+    if (this.bullzActive) return;
+    this.bullzCharge = Math.min(this.bullzChargeMax, this.bullzCharge + amount);
+  }
+
+  // ============================================================
+  // FALL DEATH
+  // ============================================================
+
+  /**
+   * Instantly kills the player from a pit fall, bypassing the damage cooldown.
+   *
+   * Normal `takeDamage()` has an 800ms invincibility window that can prevent
+   * death if the player just took a hit before falling into a hole. This method
+   * overrides that window and forces death — falling into a pit is always fatal.
+   *
+   * Called by GameScene.update() when `player.y > ROOM_HEIGHT + 80`.
+   */
+  fallDeath() {
+    if (this.isDead) return;
+    // Override invincibility — pit falls must always kill.
+    this.damageCooldown = 0;
+    this.invincible     = false;
+    this.health         = 0;
+    this.scene.events.emit('health-changed', 0);
+    // Red flash so the player sees the death rather than just teleporting.
+    this.setTint(0xff0000);
+    this._die();
   }
 
   // ============================================================

@@ -109,6 +109,10 @@ export default class GameScene extends Phaser.Scene {
 
     // Colliders added when a boss spawns; removed on room clear or boss death.
     this._bossColliders = [];
+
+    // BULLZ combo tracking: consecutive kills within 3s chain the bonus charge.
+    this._killCombo    = 0;
+    this._lastKillTime = 0;
   }
 
   // ============================================================
@@ -241,6 +245,13 @@ export default class GameScene extends Phaser.Scene {
     if (!this.player || this.player.isDead || !this.cursors || !this.keys) return;
 
     this.player.update(this.cursors, this.keys, time);
+
+    // Pit fall detection: instantly kill the player if they drop below the room floor.
+    // fallDeath() bypasses the damage-cooldown invincibility window so it always fires.
+    if (!this.player.isDead && this.player.y > ROOM_HEIGHT + 80) {
+      this.cameras.main.shake(200, 0.015);
+      this.player.fallDeath();
+    }
 
     // Enemy AI — each enemy drives its own state machine.
     this.enemies.getChildren().forEach(e => {
@@ -606,6 +617,21 @@ export default class GameScene extends Phaser.Scene {
     this.events.on('enemy-killed', ({ score, x, y }) => {
       this.player.addScore(score);
       this._floatScore(score, x, y);
+
+      // ── BULLZ charge on kill ──────────────────────────────────────────────
+      // Kills within 3s of each other build a combo that escalates the bonus.
+      // Combo caps at 5 to prevent a full charge from a single packed room.
+      const now = this.time.now;
+      if (now - this._lastKillTime < 3000) {
+        this._killCombo = Math.min(this._killCombo + 1, 5);
+      } else {
+        this._killCombo = 1; // New chain starts.
+      }
+      this._lastKillTime = now;
+      // Base 80 units (8%) + 25 per combo level above 1, max 300 per kill.
+      const killBonus = 80 + (this._killCombo - 1) * 25;
+      this.player?.addBullzCharge(Math.min(killBonus, 300));
+
       this._checkRoomClear();
     });
 

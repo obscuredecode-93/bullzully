@@ -153,7 +153,7 @@ export default class HUDScene extends Phaser.Scene {
     // "BULLZ READY!" pulse exactly once when it completes.
     this._wasBullzOnCooldown = false;
 
-    this._drawBullzBar(0, false, false, 8000);
+    this._drawBullzBar(0, false, false);
 
     // ── Wire GameScene event listeners ────────────────────────────────────────
     const gameScene = this.scene.get('GameScene');
@@ -216,31 +216,33 @@ export default class HUDScene extends Phaser.Scene {
   // ============================================================
 
   /**
-   * Polls the player's BULLZ cooldown state each frame.
+   * Polls the player's BULLZ charge state each frame.
    *
-   * Polling (rather than events) is the right approach here because the
-   * cooldown changes every frame — an event per tick would overwhelm the
-   * emitter queue. The `_wasBullzOnCooldown` flag ensures `_flashBullzReady()`
-   * fires only once per cooldown completion.
+   * Polling is used instead of events because the charge changes every frame
+   * (passive fill) — firing an event at 60fps would flood the emitter queue.
+   *
+   * `_wasBullzOnCooldown` (name kept for consistency) now means "meter was not
+   * full last frame" — used to fire the "BULLZ READY!" flash exactly once when
+   * the meter tops out.
    */
   update() {
     const player = this.scene.get('GameScene')?.player;
     if (!player) return;
 
-    const cooldown = player.bullzCooldown ?? 0;
-    const ready    = cooldown <= 0;
-    const active   = player.bullzActive   ?? false;
-    // pct: 0 = empty (just used), 1 = full (ready).
-    const pct = ready ? 1 : 1 - cooldown / (player.bullzCooldownMax || 8000);
+    const charge = player.bullzCharge    ?? 0;
+    const max    = player.bullzChargeMax ?? 1000;
+    const ready  = charge >= max;
+    const active = player.bullzActive    ?? false;
+    const pct    = Math.min(1, charge / max);
 
-    this._drawBullzBar(pct, ready, active, cooldown);
+    this._drawBullzBar(pct, ready, active);
 
-    // One-shot flash when cooldown completes.
+    // One-shot flash when charge reaches full.
     if (this._wasBullzOnCooldown && ready && !active) {
       this._wasBullzOnCooldown = false;
       this._flashBullzReady();
     }
-    if (!ready) this._wasBullzOnCooldown = true;
+    if (!ready && !active) this._wasBullzOnCooldown = true;
   }
 
   // ============================================================
@@ -248,19 +250,18 @@ export default class HUDScene extends Phaser.Scene {
   // ============================================================
 
   /**
-   * Redraws the BULLZ cooldown bar with appropriate colours for each state.
+   * Redraws the BULLZ charge bar with appropriate colours for each state.
    *
    * Three visual states:
-   *  - Recharging: dim orange fill, grey border, countdown label.
-   *  - Ready:      gold fill with shine, gold border, "READY!" label.
-   *  - Active:     bright yellow fill with shine, gold border, "ACTIVE!" label.
+   *  - Charging: dim orange fill, grey border, "XX%" label.
+   *  - Ready:    gold fill with shine, gold border, "READY!" label.
+   *  - Active:   bright yellow fill with shine, gold border, "ACTIVE!" label.
    *
-   * @param {number}  pct       - Fill fraction 0–1.
-   * @param {boolean} ready     - Whether the ability is off cooldown.
-   * @param {boolean} active    - Whether BULLZ is currently active.
-   * @param {number}  cooldownMs - Remaining cooldown in ms (for the countdown label).
+   * @param {number}  pct    - Fill fraction 0–1 (charge / chargeMax).
+   * @param {boolean} ready  - Whether the meter is full and BULLZ can fire.
+   * @param {boolean} active - Whether BULLZ is currently active.
    */
-  _drawBullzBar(pct, ready, active, cooldownMs) {
+  _drawBullzBar(pct, ready, active) {
     const h  = this._height || this.cameras.main.height;
     const bx = 60, bw = 160, bh = 10, by = h - 19;
 
@@ -282,14 +283,13 @@ export default class HUDScene extends Phaser.Scene {
       }
     }
 
-    // Label
+    // Label: charge percentage during fill, status text when ready/active.
     if (active) {
       this._bullzTimer.setText('ACTIVE!').setStyle({ color: '#ffff44' });
     } else if (ready) {
       this._bullzTimer.setText('READY!').setStyle({ color: '#ffcc00' });
     } else {
-      // Show ceiling seconds (Math.ceil) so "0s" never appears while the bar isn't full.
-      this._bullzTimer.setText(`${Math.ceil(cooldownMs / 1000)}s`).setStyle({ color: '#888888' });
+      this._bullzTimer.setText(`${Math.floor(pct * 100)}%`).setStyle({ color: '#888888' });
     }
   }
 
