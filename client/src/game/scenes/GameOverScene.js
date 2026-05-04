@@ -20,6 +20,8 @@
  * @module scenes/GameOverScene
  */
 
+import { API_BASE } from '../config';
+
 /**
  * GameOverScene — end screen for death (all lives lost) or game completion.
  */
@@ -188,7 +190,7 @@ export default class GameOverScene extends Phaser.Scene {
     this._statusText.setText('Submitting...');
 
     try {
-      const resp = await fetch('/api/scores', {
+      const resp = await fetch(`${API_BASE}/scores`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({

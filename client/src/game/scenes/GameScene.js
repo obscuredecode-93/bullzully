@@ -30,7 +30,7 @@
  * @module scenes/GameScene
  */
 
-import { ROOM_WIDTH, ROOM_HEIGHT, TILE_SIZE, PLAYER_MAX_LIVES, PLAYER_MAX_AMMO } from '../config';
+import { ROOM_WIDTH, ROOM_HEIGHT, TILE_SIZE, PLAYER_MAX_LIVES, PLAYER_MAX_AMMO, API_BASE } from '../config';
 import { ProceduralGen } from '../systems/ProceduralGen';
 import Player from '../entities/Player';
 import PookieSigma from '../entities/enemies/PookieSigma';
@@ -922,7 +922,7 @@ export default class GameScene extends Phaser.Scene {
   async _saveGame() {
     if (this.sessionId === 'offline' || !this.player) return;
     try {
-      await fetch('/api/game/save', {
+      await fetch(`${API_BASE}/game/save`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({

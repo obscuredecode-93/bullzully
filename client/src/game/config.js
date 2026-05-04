@@ -97,11 +97,17 @@ export const PROJECTILE_SPEED   = 420;
 // ============================================================
 
 /**
- * Base path for all backend API calls.
- * Vite proxies `/api` → `http://localhost:3001` during development,
- * so the same path works in both dev and production.
+ * Base URL for all backend API calls.
+ *
+ * How this works across environments:
+ *  - Local dev (no VITE_API_URL set): resolves to '/api', which Vite's proxy
+ *    forwards to http://localhost:3001 — no CORS issue, no env file needed.
+ *  - Production same-origin deploy: resolves to '/api', works as-is.
+ *  - Production cross-origin deploy (client on Vercel, server on Railway/Render):
+ *    set VITE_API_URL=https://your-server.up.railway.app in the Vercel env dashboard;
+ *    resolves to 'https://your-server.up.railway.app/api' — full absolute URL.
  */
-export const API_BASE = '/api';
+export const API_BASE = (import.meta.env.VITE_API_URL ?? '') + '/api';
 
 // ============================================================
 // PHASER GAME CONFIG FACTORY

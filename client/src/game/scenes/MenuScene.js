@@ -18,6 +18,8 @@
  * @module scenes/MenuScene
  */
 
+import { API_BASE } from '../config';
+
 /**
  * MenuScene — title screen with Play, Continue, and Leaderboard options.
  */
@@ -197,7 +199,7 @@ export default class MenuScene extends Phaser.Scene {
   async _loadGame() {
     const sessionId = this._getSessionId();
     try {
-      const resp = await fetch(`/api/game/load/${sessionId}`);
+      const resp = await fetch(`${API_BASE}/game/load/${sessionId}`);
       if (!resp.ok) {
         this._showMsg('No save found. Starting fresh!');
         this.time.delayedCall(1200, () => {

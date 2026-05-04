@@ -23,6 +23,8 @@
  * @module scenes/PauseScene
  */
 
+import { API_BASE } from '../config';
+
 /**
  * PauseScene — modal overlay pause menu with three panels.
  * GameScene is paused; this scene runs freely as an overlay.
@@ -329,7 +331,7 @@ export default class PauseScene extends Phaser.Scene {
   async _exitToMenu() {
     if (this._save.sessionId !== 'offline') {
       try {
-        await fetch('/api/game/save', {
+        await fetch(`${API_BASE}/game/save`, {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
           body:    JSON.stringify(this._save),

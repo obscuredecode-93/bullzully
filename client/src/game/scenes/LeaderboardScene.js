@@ -20,6 +20,8 @@
  * @module scenes/LeaderboardScene
  */
 
+import { API_BASE } from '../config';
+
 /**
  * LeaderboardScene — shows the top-10 score table fetched from the server.
  */
@@ -88,7 +90,7 @@ export default class LeaderboardScene extends Phaser.Scene {
 
     // ── Fetch and render ──────────────────────────────────────────────────────
     try {
-      const resp = await fetch('/api/scores?limit=10');
+      const resp = await fetch(`${API_BASE}/scores?limit=10`);
       if (!resp.ok) throw new Error('fetch failed');
 
       const scores = await resp.json();

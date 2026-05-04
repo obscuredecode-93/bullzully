@@ -25,10 +25,13 @@ const app = express();
 // =============================================================
 
 /**
- * Allow requests from the Vite dev server (5173) and any CRA dev server (3000).
- * In production you would restrict this to your actual domain.
+ * Allow requests from the configured client origin.
+ * Set CLIENT_URL in production (e.g., your Vercel frontend URL).
+ * Falls back to '*' so the server still works without the env var configured.
  */
-app.use(cors({ origin: ['http://localhost:5173', 'http://localhost:3000'] }));
+app.use(cors({
+  origin: process.env.CLIENT_URL || '*',
+}));
 
 // Parse incoming JSON bodies so req.body is populated in route handlers.
 app.use(express.json());
