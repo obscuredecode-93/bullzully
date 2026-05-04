@@ -1,3 +1,35 @@
+/**
+ * @fileoverview GameScene — the main gameplay scene.
+ *
+ * Responsibilities:
+ *  1. Initialises the physics world, player, and all physics groups.
+ *  2. Generates zone rooms via ProceduralGen and loads them one at a time.
+ *  3. Manages the lifecycle of enemies, bosses, pickups, and projectiles per room.
+ *  4. Owns all permanent and per-boss physics colliders.
+ *  5. Handles room-clear detection, door mechanics, and zone/room transitions.
+ *  6. Coordinates save-game calls and scene transitions to GameOverScene.
+ *
+ * Scene communication model:
+ *  - HUDScene listens to GameScene's event emitter for state changes.
+ *  - PauseScene receives a state snapshot via `scene.launch` data.
+ *  - Player emits events on the GameScene emitter; GameScene routes them.
+ *
+ * Physics group design:
+ *  - `this.enemies` MUST be `physics.add.group()` (not `add.group()`).
+ *    Plain GameObjects.Group lacks the `isParent` flag that Phaser's arcade
+ *    overlap system requires — using it causes all enemy overlap callbacks to
+ *    silently never fire.
+ *  - Boss colliders are added/removed per-boss via `_addBossColliders` /
+ *    `_removeBossColliders` because passing a custom fake-group object to
+ *    `physics.add.overlap` throws a TypeError at runtime.
+ *
+ * Room transition flow:
+ *  player.x > ROOM_WIDTH - 80  →  _goToNextRoom()  →  _loadRoom(next)
+ *                               OR _goToNextZone()  →  scene.restart(nextZoneData)
+ *
+ * @module scenes/GameScene
+ */
+
 import { ROOM_WIDTH, ROOM_HEIGHT, TILE_SIZE, PLAYER_MAX_LIVES, PLAYER_MAX_AMMO } from '../config';
 import { ProceduralGen } from '../systems/ProceduralGen';
 import Player from '../entities/Player';
@@ -12,8 +44,13 @@ import { DiscordVoid } from '../zones/DiscordVoid';
 import { MagheibaDungeon } from '../zones/MagheibaDungeon';
 import { Canada } from '../zones/Canada';
 
+// Zone configs indexed by zoneIndex (0–3).
 const ZONES = [Greenpath, DiscordVoid, MagheibaDungeon, Canada];
+
+// Map from spawn type strings (stored in room data) to constructor classes.
 const ENEMY_CLASSES = { PookieSigma, DiscordGhoster, BrainrotSpreader, ZullbullyKnight };
+
+// Maps pickup type strings to their texture keys.
 const PICKUP_TEXTURES = {
   health: 'pickup_health',
   ammo:   'pickup_ammo',
@@ -21,43 +58,78 @@ const PICKUP_TEXTURES = {
   shield: 'pickup_shield',
 };
 
+/**
+ * GameScene — main gameplay scene. Manages rooms, enemies, bosses, and transitions.
+ */
 export default class GameScene extends Phaser.Scene {
   constructor() {
     super('GameScene');
   }
 
-  // ─── INIT ────────────────────────────────────────────────────────────────
+  // ============================================================
+  // INIT
+  // ============================================================
+
+  /**
+   * Receives data from MenuScene (new game) or from scene.restart (zone transition).
+   *
+   * `cursors` and `keys` are null-initialised here so `update()` can guard
+   * against them being undefined if `_buildScene()` throws before keyboard setup.
+   *
+   * @param {object} data
+   * @param {number} data.zoneIndex      - Starting zone (0–3).
+   * @param {number} [data.currentRoom]  - Starting room within the zone (0-based).
+   * @param {string} [data.sessionId]    - Browser session ID for save calls.
+   * @param {number} [data.lives]        - Starting lives.
+   * @param {number} [data.health]       - Starting health.
+   * @param {number} [data.ammo]         - Starting ammo.
+   * @param {number} [data.score]        - Starting score (carries over from previous zones).
+   * @param {number} [data.zonesCompleted] - Total zones cleared so far.
+   */
   init(data) {
-    this.currentZoneIndex  = data.zoneIndex    ?? 0;
-    this.currentRoomIndex  = data.currentRoom  ?? 0;
-    this.sessionId         = data.sessionId    || 'offline';
-    this._initLives        = data.lives        ?? PLAYER_MAX_LIVES;
-    this._initHealth       = data.health       ?? 100;
-    this._initAmmo         = data.ammo         ?? PLAYER_MAX_AMMO;
-    this._initScore        = data.score        ?? 0;
-    this.zonesCompleted    = data.zonesCompleted ?? 0;
-    this._rooms            = [];
-    this._roomCleared      = false;
-    this._transitioning    = false;
-    this._bossActive       = false;
-    this.boss              = null;
-    this.player            = null;
-    // Safe defaults so update() never crashes if create() throws partway through
-    this.cursors           = null;
-    this.keys              = null;
-    // Colliders added per-boss are stored here so we can remove them on room clear
-    this._bossColliders    = [];
+    this.currentZoneIndex = data.zoneIndex    ?? 0;
+    this.currentRoomIndex = data.currentRoom  ?? 0;
+    this.sessionId        = data.sessionId    || 'offline';
+    this._initLives       = data.lives        ?? PLAYER_MAX_LIVES;
+    this._initHealth      = data.health       ?? 100;
+    this._initAmmo        = data.ammo         ?? PLAYER_MAX_AMMO;
+    this._initScore       = data.score        ?? 0;
+    this.zonesCompleted   = data.zonesCompleted ?? 0;
+
+    this._rooms       = [];
+    this._roomCleared = false;
+    this._transitioning = false;
+    this._bossActive  = false;
+    this.boss         = null;
+    this.player       = null;
+
+    // Safe null defaults — update() checks these before reading.
+    this.cursors = null;
+    this.keys    = null;
+
+    // Colliders added when a boss spawns; removed on room clear or boss death.
+    this._bossColliders = [];
   }
 
-  // ─── CREATE ──────────────────────────────────────────────────────────────
+  // ============================================================
+  // CREATE
+  // ============================================================
+
+  /**
+   * Wraps `_buildScene()` in a try/catch so startup errors surface as visible
+   * on-screen text rather than silently freezing on a black screen.
+   *
+   * Without this wrapper, a single thrown error in create() leaves the game in
+   * an unrecoverable black-screen state — nothing to click, no console visible
+   * to non-developer players.
+   */
   create() {
     try {
       this._buildScene();
     } catch (err) {
-      // Surface any startup error as visible on-screen text instead of a silent freeze
       console.error('[GameScene] create() failed:', err);
       this.add.text(
-        this.cameras.main.width / 2,
+        this.cameras.main.width  / 2,
         this.cameras.main.height / 2,
         `STARTUP ERROR:\n${err.message}\n\nCheck browser console.`,
         {
@@ -69,30 +141,38 @@ export default class GameScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * The actual scene setup — called by `create()` inside a try/catch.
+   *
+   * IMPORTANT: `cursors` and `keys` are set up FIRST (before colliders, player
+   * creation, or any other throwable code). This ensures `update()` always has
+   * valid input references even if the rest of setup fails partway through.
+   */
   _buildScene() {
     this.physics.world.setBounds(0, 0, ROOM_WIDTH, ROOM_HEIGHT);
     this.enemyClasses = ENEMY_CLASSES;
 
-    // Generate zone rooms
+    // ── Zone + procedural generation ──────────────────────────────────────────
     const zoneConfig = ZONES[this.currentZoneIndex] || ZONES[0];
-    this.zoneConfig = zoneConfig;
+    this.zoneConfig  = zoneConfig;
+    // XOR-based seed: different zone means different layout even at the same timestamp.
     const seed = Date.now() ^ (this.currentZoneIndex * 0x9e3779b9);
     this._rooms = new ProceduralGen(seed).generateZone(zoneConfig);
 
-    // Background (parallax scroll factor)
+    // Background with parallax scroll factor — moves at 20% of camera speed.
     this.add.image(400, 240, zoneConfig.bgTileKey).setScrollFactor(0.2).setDepth(-5);
 
-    // ── Physics groups ──────────────────────────────────────────────────────
-    this.platformGroup    = this.physics.add.staticGroup();
-    // FIX: use physics.add.group() so Phaser's arcade overlap detects enemies correctly
-    this.enemies          = this.physics.add.group();
-    this.pickups          = this.physics.add.staticGroup();
+    // ── Physics groups ────────────────────────────────────────────────────────
+    this.platformGroup     = this.physics.add.staticGroup();
+    // FIX: physics.add.group() required — plain add.group() breaks arcade overlap.
+    this.enemies           = this.physics.add.group();
+    this.pickups           = this.physics.add.staticGroup();
     this.playerProjectiles = this.physics.add.group();
     this.enemyProjectiles  = this.physics.add.group();
 
-    // Input — initialised FIRST so it's always set before any possible throw below
+    // ── Input (initialised FIRST to guarantee availability in update) ─────────
     this.cursors = this.input.keyboard.createCursorKeys();
-    this.keys = this.input.keyboard.addKeys({
+    this.keys    = this.input.keyboard.addKeys({
       A: Phaser.Input.Keyboard.KeyCodes.A,
       D: Phaser.Input.Keyboard.KeyCodes.D,
       W: Phaser.Input.Keyboard.KeyCodes.W,
@@ -105,49 +185,64 @@ export default class GameScene extends Phaser.Scene {
       SHIFT: Phaser.Input.Keyboard.KeyCodes.SHIFT,
     });
 
-    // Player
+    // ── Player ────────────────────────────────────────────────────────────────
     this.player = new Player(this, 120, 380);
     this.player.health = this._initHealth;
     this.player.lives  = this._initLives;
     this.player.ammo   = this._initAmmo;
     this.player.score  = this._initScore;
 
-    // Camera
+    // ── Camera ────────────────────────────────────────────────────────────────
     this.cameras.main.setBounds(0, 0, ROOM_WIDTH, ROOM_HEIGHT);
+    // lerp 0.08: slightly laggy follow — softer than snapping, reveals more of
+    // what's ahead of the player.
     this.cameras.main.startFollow(this.player, true, 0.08, 0.08);
+    // Offset 60px downward so the player is shown in the upper half of the
+    // screen, giving more visibility below (where most threats are).
     this.cameras.main.setFollowOffset(0, 60);
 
-    // Colliders that apply to the whole session (not per-room)
     this._setupPermanentColliders();
-
     this._setupEvents();
 
-    // Launch HUD in parallel
+    // ── HUD ───────────────────────────────────────────────────────────────────
+    // Launch in parallel (not start) so it runs alongside GameScene.
     this.scene.launch('HUDScene', {
-      lives: this.player.lives,
-      health: this.player.health,
-      ammo:   this.player.ammo,
-      score:  this.player.score,
+      lives:    this.player.lives,
+      health:   this.player.health,
+      ammo:     this.player.ammo,
+      score:    this.player.score,
       zoneName: zoneConfig.name,
     });
     this.events.emit('zone-changed', zoneConfig.name);
 
     this._loadRoom(this.currentRoomIndex);
 
-    // ESC = pause,  P = quick-save
+    // ── Keyboard shortcuts ────────────────────────────────────────────────────
     this.input.keyboard.addKey('ESC').on('down', () => this._triggerPause());
     this.input.keyboard.addKey('P').on('down',   () => this._saveGame());
 
-    // Also allow the HUD pause button to trigger pause
+    // HUD pause button emits this event rather than calling scene.pause() directly.
     this.events.on('pause-requested', () => this._triggerPause());
   }
 
-  // ─── UPDATE ──────────────────────────────────────────────────────────────
+  // ============================================================
+  // UPDATE
+  // ============================================================
+
+  /**
+   * Per-frame update: player input, enemy AI, projectile culling, and room exit check.
+   *
+   * Guards `!this.cursors || !this.keys` prevent crashes if create() threw before
+   * keyboard setup completed (see _buildScene comment on init order).
+   *
+   * @param {number} time - Phaser scene timestamp in ms.
+   */
   update(time) {
     if (!this.player || this.player.isDead || !this.cursors || !this.keys) return;
 
     this.player.update(this.cursors, this.keys, time);
 
+    // Enemy AI — each enemy drives its own state machine.
     this.enemies.getChildren().forEach(e => {
       if (e.active && e.update) e.update(this.player, time);
     });
@@ -156,7 +251,8 @@ export default class GameScene extends Phaser.Scene {
       this.boss.update(this.player, time);
     }
 
-    // Destroy out-of-bounds projectiles
+    // Cull out-of-bounds projectiles — prevents accumulation on long rooms.
+    // +32 buffer avoids premature destruction at the very edge.
     this.playerProjectiles.getChildren().forEach(p => {
       if (p.x < -32 || p.x > ROOM_WIDTH + 32) p.destroy();
     });
@@ -164,18 +260,35 @@ export default class GameScene extends Phaser.Scene {
       if (p.x < -32 || p.x > ROOM_WIDTH + 32 || p.y > ROOM_HEIGHT + 32) p.destroy();
     });
 
-    // Walk through right-side door to advance room
+    // Door exit: player walks through the right edge after the room is cleared.
     if (!this._transitioning && this._roomCleared && this.player.x > ROOM_WIDTH - 80) {
       this._goToNextRoom();
     }
   }
 
-  // ─── PERMANENT COLLIDERS (survive room transitions) ──────────────────────
+  // ============================================================
+  // PERMANENT COLLIDERS
+  // ============================================================
+
+  /**
+   * Sets up all colliders that persist across room transitions.
+   *
+   * These are registered once in `_buildScene` and never removed. The physics
+   * groups (enemies, playerProjectiles, etc.) are cleared and repopulated each
+   * room — the colliders automatically apply to whatever children are in the
+   * groups at the time of each overlap check.
+   *
+   * Why permanent colliders for enemies but per-boss colliders for bosses?
+   *  - Enemies live in `this.enemies` (a group), so one group-level collider covers all.
+   *  - Bosses are singleton sprites, not group members. Passing a single sprite to
+   *    `physics.add.overlap` is valid; passing a fake group-like object is not —
+   *    it causes a TypeError inside Phaser's world step.
+   */
   _setupPermanentColliders() {
-    // Player lands on platforms
+    // Player lands on platforms.
     this.physics.add.collider(this.player, this.platformGroup);
 
-    // Player melee hitbox hits enemies
+    // Player melee hits enemies — damage scaled by BULLZ multiplier.
     this.physics.add.overlap(
       this.player.getMeleeHitbox(),
       this.enemies,
@@ -184,12 +297,11 @@ export default class GameScene extends Phaser.Scene {
         const dmg = Math.floor(25 * (this.player?.bullzMultiplier ?? 1));
         enemy.takeDamage(dmg);
         this._showHitSpark(enemy.x, enemy.y);
-        // Medium shake on melee connect
         this.cameras.main.shake(150, 0.01);
       }
     );
 
-    // Player bullets hit enemies
+    // Player bullets hit enemies.
     this.physics.add.overlap(
       this.playerProjectiles,
       this.enemies,
@@ -202,14 +314,14 @@ export default class GameScene extends Phaser.Scene {
       }
     );
 
-    // Player bullets destroyed by terrain
+    // Player bullets destroyed on terrain contact.
     this.physics.add.collider(
       this.playerProjectiles,
       this.platformGroup,
       (bullet) => bullet.destroy()
     );
 
-    // Enemy projectiles hit player
+    // Enemy projectiles hit player.
     this.physics.add.overlap(
       this.player,
       this.enemyProjectiles,
@@ -220,14 +332,14 @@ export default class GameScene extends Phaser.Scene {
       }
     );
 
-    // Player collects pickups
+    // Player collects pickups on contact.
     this.physics.add.overlap(
       this.player,
       this.pickups,
       (_pl, pickup) => this._collectPickup(pickup)
     );
 
-    // Enemy bodies hurt player on contact
+    // Enemy bodies deal contact damage — damageCooldown prevents rapid stacking.
     this.physics.add.overlap(
       this.player,
       this.enemies,
@@ -237,14 +349,28 @@ export default class GameScene extends Phaser.Scene {
       }
     );
 
-    // Enemies land on platforms
+    // Enemies land on platforms (so they don't fall through the floor).
     this.physics.add.collider(this.enemies, this.platformGroup);
   }
 
-  // ─── PER-BOSS COLLIDERS (added when boss spawns, removed on clear) ───────
+  // ============================================================
+  // PER-BOSS COLLIDERS
+  // ============================================================
+
+  /**
+   * Registers melee, bullet, and platform colliders for a specific boss sprite.
+   *
+   * Called when a boss spawns. Stored in `_bossColliders` so they can be
+   * cleaned up with `_removeBossColliders` on room clear or boss death.
+   *
+   * This pattern avoids passing boss sprites directly to the permanent colliders
+   * (which would require knowing the boss object at scene setup time, before it spawns).
+   *
+   * @param {Phaser.Physics.Arcade.Sprite} boss - The spawned boss instance.
+   */
   _addBossColliders(boss) {
     this._bossColliders = [
-      // Melee hits boss
+      // Melee hits boss.
       this.physics.add.overlap(
         this.player.getMeleeHitbox(),
         boss,
@@ -255,7 +381,7 @@ export default class GameScene extends Phaser.Scene {
           this.cameras.main.shake(150, 0.01);
         }
       ),
-      // Bullets hit boss
+      // Bullets hit boss.
       this.physics.add.overlap(
         this.playerProjectiles,
         boss,
@@ -267,11 +393,15 @@ export default class GameScene extends Phaser.Scene {
           bullet.destroy();
         }
       ),
-      // Boss lands on platforms
+      // Boss lands on platforms.
       this.physics.add.collider(boss, this.platformGroup),
     ];
   }
 
+  /**
+   * Removes all per-boss colliders from the physics world.
+   * Called before spawning the next boss or when transitioning rooms.
+   */
   _removeBossColliders() {
     this._bossColliders.forEach(c => {
       if (c) this.physics.world.removeCollider(c);
@@ -279,7 +409,22 @@ export default class GameScene extends Phaser.Scene {
     this._bossColliders = [];
   }
 
-  // ─── ROOM LOADING ────────────────────────────────────────────────────────
+  // ============================================================
+  // ROOM LOADING
+  // ============================================================
+
+  /**
+   * Clears the current room and builds the next one from the generated room data.
+   *
+   * Boss rooms delay enemy spawning by 1500ms to show the boss intro message
+   * before the encounter starts. Normal rooms delay by 600ms for the room
+   * number message to display.
+   *
+   * Players are repositioned to the left edge (x=80) on all rooms after the
+   * first — walking out of the right-side door should deposit them at the left.
+   *
+   * @param {number} roomIndex - Index into `this._rooms`.
+   */
   _loadRoom(roomIndex) {
     this._clearRoom();
     this._roomCleared = false;
@@ -290,11 +435,10 @@ export default class GameScene extends Phaser.Scene {
     this.currentRoom      = room;
     this.currentRoomIndex = roomIndex;
 
-    // Build static platforms
+    // Build platform tiles from room layout data.
     room.platforms.forEach(p => this._buildPlatform(p.x, p.y, p.w, p.h));
-    // No manual platformGroup.refresh() — each create() + refreshBody() call handles it
 
-    // Door starts closed
+    // Door starts closed; opened when the room is cleared.
     this._door     = this.add.image(ROOM_WIDTH - 32, 384, 'door_closed').setDepth(5);
     this._doorOpen = false;
 
@@ -306,18 +450,32 @@ export default class GameScene extends Phaser.Scene {
       this.time.delayedCall(600, () => {
         this._spawnEnemies(room.enemySpawns);
         this._spawnPickups(room.pickupSpawns);
-        this._updateDoorState();
+        this._updateDoorState(); // Open immediately if room spawns zero enemies.
       });
     }
 
-    // Move player to left edge on room transitions
     if (roomIndex > 0) {
       this.player.setPosition(80, ROOM_HEIGHT - 80);
     }
   }
 
+  /**
+   * Builds one platform from tile-sized images in a static physics group.
+   *
+   * Tiles are 32px wide; `Math.ceil(w / TILE_SIZE)` ensures partial tiles at
+   * the end of a platform are still created. Each tile calls `refreshBody()`
+   * after `setDisplaySize` so the physics body matches the visual size.
+   *
+   * The ground vs platform texture is chosen by the zone suffix so each zone
+   * gets its own art style automatically.
+   *
+   * @param {number} x - Left edge of the platform (world-space px).
+   * @param {number} y - Top edge of the platform.
+   * @param {number} w - Platform width in px.
+   * @param {number} h - Platform height in px (≥32 = ground tile, <32 = platform tile).
+   */
   _buildPlatform(x, y, w, h) {
-    const cellsW  = Math.ceil(w / TILE_SIZE);
+    const cellsW   = Math.ceil(w / TILE_SIZE);
     const isGround = h >= 32;
     const suffix   = this.zoneConfig.bgTileKey.replace('bg_', '');
     const key      = isGround ? `ground_${suffix}` : `plat_${suffix}`;
@@ -329,10 +487,18 @@ export default class GameScene extends Phaser.Scene {
       const tile  = this.platformGroup.create(tileX, tileY, useKey);
       tile.setDisplaySize(TILE_SIZE, h);
       tile.body.setSize(TILE_SIZE, h);
-      tile.refreshBody();
+      tile.refreshBody(); // Required after setDisplaySize on static bodies.
     }
   }
 
+  /**
+   * Destroys all room-scoped objects: platforms, enemies, pickups, projectiles, boss.
+   * Called before loading each new room to avoid leftover state.
+   *
+   * Enemies are destroyed individually (e.destroy() runs cleanup code such as
+   * HP bar removal) before the group is cleared. The group is then cleared without
+   * destroying again (`clear(false, false)`) to avoid double-destroy.
+   */
   _clearRoom() {
     this.platformGroup.clear(true, true);
 
@@ -351,17 +517,37 @@ export default class GameScene extends Phaser.Scene {
     if (this._door) { this._door.destroy(); this._door = null; }
   }
 
-  // ─── SPAWNING ────────────────────────────────────────────────────────────
+  // ============================================================
+  // SPAWNING
+  // ============================================================
+
+  /**
+   * Instantiates enemies from the room's spawn list using the class map.
+   *
+   * Unknown spawn types are silently skipped — this prevents a bad zone config
+   * from crashing the room load.
+   *
+   * @param {Array<{type: string, x: number, y: number}>} spawns
+   */
   _spawnEnemies(spawns) {
     if (!spawns?.length) return;
     spawns.forEach(spawn => {
       const EnemyClass = ENEMY_CLASSES[spawn.type];
       if (!EnemyClass) return;
       const enemy = new EnemyClass(this, spawn.x, spawn.y);
-      this.enemies.add(enemy, true);  // true = also add to scene display list
+      // `true` = also add to scene display list (equivalent to scene.add.existing).
+      this.enemies.add(enemy, true);
     });
   }
 
+  /**
+   * Spawns the boss for a boss room, adds per-boss colliders, and announces it.
+   *
+   * Boss type is determined by `room.bossType` string — currently 'MagheibaChaasi'
+   * or 'BullyMaguire'. Default fallback is BullyMaguire.
+   *
+   * @param {object} room - Room data object with `bossSpawn` and `bossType` fields.
+   */
   _spawnBoss(room) {
     const spawn = room.bossSpawn || { x: ROOM_WIDTH / 2, y: ROOM_HEIGHT - 100 };
     this._bossActive = true;
@@ -370,7 +556,8 @@ export default class GameScene extends Phaser.Scene {
       ? new MagheibaChaasi(this, spawn.x, spawn.y)
       : new BullyMaguire(this, spawn.x, spawn.y);
 
-    // FIX: add boss colliders via proper Phaser objects, not fake groups
+    // Per-boss colliders added here — cannot be in permanent colliders because
+    // the boss sprite doesn't exist at scene setup time.
     this._addBossColliders(this.boss);
 
     this.cameras.main.shake(500, 0.01);
@@ -382,17 +569,39 @@ export default class GameScene extends Phaser.Scene {
     );
   }
 
+  /**
+   * Creates bobbing pickup sprites from the room's pickup spawn list.
+   *
+   * The `yoyo: true, repeat: -1` tween creates an infinite hover animation.
+   * Pickups are added to a staticGroup so overlap detection works but gravity
+   * doesn't apply (static bodies are unaffected by gravity).
+   *
+   * @param {Array<{type: string, x: number, y: number}>} spawns
+   */
   _spawnPickups(spawns) {
     if (!spawns?.length) return;
     spawns.forEach(spawn => {
       const texKey = PICKUP_TEXTURES[spawn.type] || 'pickup_health';
       const pickup = this.pickups.create(spawn.x, spawn.y, texKey);
       pickup.setData('type', spawn.type).setDepth(4);
+      // Hover 8px up and back — slow enough to be legible as a pickup cue.
       this.tweens.add({ targets: pickup, y: spawn.y - 8, duration: 900, yoyo: true, repeat: -1 });
     });
   }
 
-  // ─── EVENTS ──────────────────────────────────────────────────────────────
+  // ============================================================
+  // EVENTS
+  // ============================================================
+
+  /**
+   * Registers all inter-system event listeners on the scene emitter.
+   *
+   * These events are emitted by Player, enemies, and bosses:
+   *  - 'enemy-killed':   enemy died → award score, check room clear.
+   *  - 'boss-killed':    boss died → award score, handle final boss vs mid-boss flow.
+   *  - 'player-respawn': player lost a life but has lives left → respawn.
+   *  - 'game-over':      player lost all lives → show GameOverScene.
+   */
   _setupEvents() {
     this.events.on('enemy-killed', ({ score, x, y }) => {
       this.player.addScore(score);
@@ -406,19 +615,21 @@ export default class GameScene extends Phaser.Scene {
       this._removeBossColliders();
 
       if (finalBoss) {
+        // Final boss (BullyMaguire) — save then transition to victory GameOverScene.
         this._saveGame();
         this.time.delayedCall(3500, () => {
           if (victoryText?.active) victoryText.destroy();
           this.scene.stop('HUDScene');
           this.scene.start('GameOverScene', {
-            score: this.player.score,
-            zonesCompleted: this.zonesCompleted,
+            score:           this.player.score,
+            zonesCompleted:  this.zonesCompleted,
             killedFinalBoss: true,
-            sessionId: this.sessionId,
-            victory: true,
+            sessionId:       this.sessionId,
+            victory:         true,
           });
         });
       } else {
+        // Mid-boss — open the door after a brief delay for the death FX to play.
         this.time.delayedCall(2000, () => this._openDoor());
       }
     });
@@ -431,16 +642,23 @@ export default class GameScene extends Phaser.Scene {
         this.scene.stop('HUDScene');
         this.scene.start('GameOverScene', {
           score,
-          zonesCompleted: this.zonesCompleted,
+          zonesCompleted:  this.zonesCompleted,
           killedFinalBoss: false,
-          sessionId: this.sessionId,
-          victory: false,
+          sessionId:       this.sessionId,
+          victory:         false,
         });
       });
     });
   }
 
-  // ─── ROOM CLEAR LOGIC ────────────────────────────────────────────────────
+  // ============================================================
+  // ROOM CLEAR
+  // ============================================================
+
+  /**
+   * Checks whether all enemies are dead. Called whenever an enemy dies.
+   * Saves the game automatically on room clear as a checkpoint.
+   */
   _checkRoomClear() {
     const alive = this.enemies.getChildren().filter(e => e.active && !e.dead);
     if (alive.length === 0 && !this._roomCleared && !this._bossActive) {
@@ -451,6 +669,10 @@ export default class GameScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * Opens the door immediately if the room has no enemies (empty spawn list).
+   * Called once after spawning to handle zero-enemy rooms.
+   */
   _updateDoorState() {
     const hasEnemies = this.enemies.getChildren().some(e => e.active);
     if (!hasEnemies && !this._roomCleared) {
@@ -459,20 +681,32 @@ export default class GameScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * Switches the door to its open texture, starts a pulsing tween, and adds
+   * an animated arrow to draw the player toward the exit.
+   */
   _openDoor() {
     if (!this._door || this._doorOpen) return;
     this._doorOpen    = true;
     this._roomCleared = true;
     this._door.setTexture('door_open');
 
+    // Pulsing alpha on the door — repeat: -1 = forever.
     this.tweens.add({ targets: this._door, alpha: 0.7, duration: 400, yoyo: true, repeat: -1 });
 
     const arrow = this.add.text(ROOM_WIDTH - 32, 350, '→', {
       fontSize: '16px', color: '#ffcc00', fontFamily: "'Press Start 2P'",
     }).setOrigin(0.5).setDepth(15);
+    // Slide arrow left and right to guide the player's eye.
     this.tweens.add({ targets: arrow, x: arrow.x + 12, duration: 500, yoyo: true, repeat: -1 });
   }
 
+  /**
+   * Initiates the room-transition fade sequence.
+   *
+   * The 400ms fadeOut gives the player a visual cue that something is happening.
+   * `_transitioning` flag prevents multiple triggers from the player hovering at the exit.
+   */
   _goToNextRoom() {
     if (this._transitioning) return;
     this._transitioning = true;
@@ -490,6 +724,15 @@ export default class GameScene extends Phaser.Scene {
     });
   }
 
+  /**
+   * Advances to the next zone by restarting the scene with the new zone index.
+   *
+   * `scene.restart(data)` destroys and recreates GameScene — this resets all
+   * physics groups and event listeners cleanly without a full page reload.
+   * Player stats (lives, score, health, ammo) are passed through the restart data.
+   *
+   * If the next zone index exceeds the ZONES array, the game is won.
+   */
   _goToNextZone() {
     const nextZone = this.currentZoneIndex + 1;
     this.zonesCompleted++;
@@ -497,10 +740,11 @@ export default class GameScene extends Phaser.Scene {
     if (nextZone >= ZONES.length) {
       this.scene.stop('HUDScene');
       this.scene.start('GameOverScene', {
-        score: this.player.score,
-        zonesCompleted: this.zonesCompleted,
-        victory: true, killedFinalBoss: true,
-        sessionId: this.sessionId,
+        score:           this.player.score,
+        zonesCompleted:  this.zonesCompleted,
+        victory:         true,
+        killedFinalBoss: true,
+        sessionId:       this.sessionId,
       });
       return;
     }
@@ -511,18 +755,34 @@ export default class GameScene extends Phaser.Scene {
     this.time.delayedCall(1800, () => {
       this.scene.stop('HUDScene');
       this.scene.restart({
-        zoneIndex: nextZone, currentRoom: 0,
-        lives: this.player.lives, score: this.player.score,
-        health: this.player.health, ammo: this.player.ammo,
-        sessionId: this.sessionId, zonesCompleted: this.zonesCompleted,
+        zoneIndex:       nextZone,
+        currentRoom:     0,
+        lives:           this.player.lives,
+        score:           this.player.score,
+        health:          this.player.health,
+        ammo:            this.player.ammo,
+        sessionId:       this.sessionId,
+        zonesCompleted:  this.zonesCompleted,
       });
     });
   }
 
-  // ─── PICKUPS ─────────────────────────────────────────────────────────────
+  // ============================================================
+  // PICKUPS
+  // ============================================================
+
+  /**
+   * Handles all pickup collection logic — removes the pickup, shows a spark,
+   * and calls the appropriate Player method for the pickup type.
+   *
+   * The spark tween is colour-coded by type so the player can identify pickups
+   * by colour even before reading the floating text.
+   *
+   * @param {Phaser.GameObjects.Image} pickup - The collected pickup sprite.
+   */
   _collectPickup(pickup) {
     const type = pickup.getData('type');
-    this.tweens.killTweensOf(pickup);
+    this.tweens.killTweensOf(pickup); // Stop hover tween before destroying.
     pickup.destroy();
 
     const sparkColors = { health: 0xff2222, ammo: 0xffdd00, speed: 0xffff00, shield: 0x0066ff };
@@ -543,13 +803,31 @@ export default class GameScene extends Phaser.Scene {
     }
   }
 
-  // ─── VISUAL HELPERS ──────────────────────────────────────────────────────
+  // ============================================================
+  // VISUAL HELPERS
+  // ============================================================
+
+  /**
+   * Shows a short-lived spark image at the given position.
+   * Used for melee and bullet hit feedback.
+   *
+   * @param {number} x - World-space X.
+   * @param {number} y - World-space Y.
+   */
   _showHitSpark(x, y) {
     const spark = this.add.image(x, y, 'hit_spark').setDepth(16).setScale(0.8);
     this.tweens.add({ targets: spark, alpha: 0, scale: 1.5, duration: 180,
       onComplete: () => spark.destroy() });
   }
 
+  /**
+   * Floats a "+N" score label upward from an enemy kill position.
+   * Also re-emits 'score-changed' so HUDScene updates immediately.
+   *
+   * @param {number} score - Points to display.
+   * @param {number} x     - World-space X (enemy position).
+   * @param {number} y     - World-space Y.
+   */
   _floatScore(score, x, y) {
     const t = this.add.text(x, y - 20, `+${score}`, {
       fontSize: '7px', color: '#ffdd00', fontFamily: "'Press Start 2P'",
@@ -560,6 +838,14 @@ export default class GameScene extends Phaser.Scene {
     this.events.emit('score-changed', this.player.score);
   }
 
+  /**
+   * Shows a contextual pickup label (e.g., "+35 HP") that floats upward and fades.
+   *
+   * @param {number} x     - World-space X.
+   * @param {number} y     - World-space Y.
+   * @param {string} msg   - Text to show.
+   * @param {string} color - CSS hex colour string.
+   */
   _showFloatText(x, y, msg, color) {
     const t = this.add.text(x, y - 10, msg, {
       fontSize: '6px', color, fontFamily: "'Press Start 2P'",
@@ -569,22 +855,44 @@ export default class GameScene extends Phaser.Scene {
       onComplete: () => t.destroy() });
   }
 
+  /**
+   * Shows a centred room message (e.g., "ROOM 1 / 5", "BOSS INCOMING!", "ROOM CLEARED!").
+   *
+   * Uses `setScrollFactor(0)` so the text is in screen-space (not world-space).
+   * IMPORTANT: For scrollFactor-0 objects, positions must use camera pixel coords
+   * (`cameras.main.width / 2`), NOT world coords (`scrollX + width/2`).
+   * Using world coords causes the text to appear far off-screen during camera scrolling.
+   *
+   * Supports multi-line messages via '\n' split — each line fades individually.
+   *
+   * @param {string} msg             - Message text (use '\n' for multi-line).
+   * @param {string} [color='#ffffff'] - Text colour.
+   */
   _showRoomMessage(msg, color = '#ffffff') {
-    // FIX: scrollFactor(0) objects use canvas coordinates — use width/2 not scrollX + width/2
+    // FIX: scrollFactor(0) objects use canvas coordinates — width/2, not scrollX + width/2.
     const cx = this.cameras.main.width / 2;
     msg.split('\n').forEach((line, i) => {
       const t = this.add.text(cx, 170 + i * 24, line, {
         fontSize: '10px', color, fontFamily: "'Press Start 2P'",
         stroke: '#000000', strokeThickness: 4,
       }).setScrollFactor(0).setDepth(25).setOrigin(0.5);
+      // 500ms delay before fading so the player has time to read it.
       this.tweens.add({ targets: t, y: t.y - 30, alpha: 0, duration: 1800, delay: 500,
         onComplete: () => t.destroy() });
     });
   }
 
-  // ─── PAUSE ───────────────────────────────────────────────────────────────
+  // ============================================================
+  // PAUSE
+  // ============================================================
+
+  /**
+   * Pauses GameScene and launches PauseScene as an overlay.
+   *
+   * Guards against double-pausing (e.g., ESC pressed twice rapidly) and
+   * pausing during a room transition (which could corrupt the transition state).
+   */
   _triggerPause() {
-    // Don't double-pause or pause during a transition
     if (this.scene.isPaused('GameScene') || this._transitioning) return;
 
     this.scene.pause('GameScene');
@@ -592,33 +900,55 @@ export default class GameScene extends Phaser.Scene {
       sessionId:   this.sessionId,
       currentZone: this.currentZoneIndex,
       currentRoom: this.currentRoomIndex,
-      lives:   this.player?.lives   ?? 3,
-      health:  this.player?.health  ?? 100,
-      ammo:    this.player?.ammo    ?? 10,
-      score:   this.player?.score   ?? 0,
+      lives:       this.player?.lives   ?? 3,
+      health:      this.player?.health  ?? 100,
+      ammo:        this.player?.ammo    ?? 10,
+      score:       this.player?.score   ?? 0,
     });
   }
 
-  // ─── SAVE ────────────────────────────────────────────────────────────────
+  // ============================================================
+  // SAVE
+  // ============================================================
+
+  /**
+   * POSTs the current game state to the server.
+   *
+   * Called on: room clear, zone transition, game-over, and pause-to-menu.
+   * Silently swallows errors — the game continues whether or not the save succeeds.
+   * `sessionId === 'offline'` check prevents a network request during local
+   * development without a running Express server.
+   */
   async _saveGame() {
     if (this.sessionId === 'offline' || !this.player) return;
     try {
       await fetch('/api/game/save', {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body:    JSON.stringify({
           sessionId:   this.sessionId,
           currentZone: this.currentZoneIndex,
           currentRoom: this.currentRoomIndex,
-          lives:  this.player.lives,
-          health: this.player.health,
-          ammo:   this.player.ammo,
-          score:  this.player.score,
+          lives:       this.player.lives,
+          health:      this.player.health,
+          ammo:        this.player.ammo,
+          score:       this.player.score,
         }),
       });
-    } catch { /* server offline — silent */ }
+    } catch { /* server offline — no save, game continues */ }
   }
 
+  // ============================================================
+  // SHUTDOWN
+  // ============================================================
+
+  /**
+   * Removes all scene-level event listeners when GameScene stops.
+   *
+   * Without this, restarting GameScene (on zone transition) would accumulate
+   * duplicate listeners on the same emitter, firing the callbacks multiple times
+   * per event.
+   */
   shutdown() {
     this.events.off('enemy-killed');
     this.events.off('boss-killed');
